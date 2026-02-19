@@ -10,7 +10,7 @@ st.set_page_config(page_title="My Portfolio Dashboard", layout="wide")
 st.title("📈 Positional Portfolio Dashboard")
 
 # Replace this string with your published Google Sheet CSV link
-SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vT5msMoKIvOtgoNeVJb41T2pRasfeAMwou0U_bz_4vqS_AzNIK_iHL88Z0OTN4za2_7RGO58S-jfCbD/pubhtml"
+SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vT5msMoKIvOtgoNeVJb41T2pRasfeAMwou0U_bz_4vqS_AzNIK_iHL88Z0OTN4za2_7RGO58S-jfCbD/pub?output=csv"
 
 @st.cache_data(ttl=3600)
 def load_portfolio():
@@ -244,4 +244,5 @@ for index, row in portfolio.iterrows():
         fig.update_yaxes(range=[0, 100], row=2, col=1) # Lock RSI Y-axis from 0 to 100
         
         st.plotly_chart(fig, use_container_width=True)
+
 
