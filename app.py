@@ -9,7 +9,7 @@ st.set_page_config(page_title="My Portfolio Dashboard", layout="wide")
 st.title("📈 Positional Portfolio Dashboard")
 
 # Replace this string with your published Google Sheet CSV link
-SHEET_CSV_URL = "https://doc-08-7s-sheets.googleusercontent.com/pub/1cn5ph2ulkb0qr3lajt32ge2d8/65f02eot0csuce7h325eaf3gn4/1771501330000/118067547509532549602/118067547509532549602/e@2PACX-1vT5msMoKIvOtgoNeVJb41T2pRasfeAMwou0U_bz_4vqS_AzNIK_iHL88Z0OTN4za2_7RGO58S-jfCbD?gid=0&single=true&output=csv&dat=AOctwYqNrGNJJwrvof50Q2KpaeEfMEmd9WUPMSXVWHXmoBOmPeJFIL2CYUcT2fWz04VqgVGmm6JNehPXIzPsbXTeireq5abHZKTfaxQTCWaHmmbQoc84L4uWMYhAwXw6ZGMDtMQ-Y9QQz2-o3iVsLzEl9pex87PtUrRQ94ntu1eqwKZojkUJEzyix75Lx9ih3Zof3ujotOfVhKtZcoT1UtgY06Y_oto-4Bq_tTfTKbcKxC3hJldAY2MaFmlMTvG_C3nd22JDX9_JzoT0pknPnGbiyTkVmwIEXfYL_CxoQlg-VMOyh7lzmzQ6_gN9MNP-rF0qJUxC9i59smm3qthtFL7khhrdd8SQfuUeJiQerXB-fI-M_DBwWYEcYp6BI1rd44O85kG-NDId-v2ELHfc4Gy5d-JqN7VTLnmwLYpbiFeji1Vjie8YoxA3w6ESK1TQmm2zCYTMRtXDL0hkqwaZLj7kPemPqZNLcj0kPe9-9fw5spbFIL-Bbznd2Z0bIV7FC2PR9o_A4puYn8QcB-hBYi4Edq4mLLw8b7qWG3jA6NufC8WTTZxkPWsXoQ8cJED8rK7n1ZznKmHm5egUx_WKaYawKe9IVrsKGRVld6DXJbUQZGJ-pP6QT99n-QzniKjq27NbeI_aeLndikjE8kWoaHNliPYujaBONkVg0W_IvUrogNolFnYij7eQRhg8O0r1ZWYpgRbWUUkeZ2dV2JJjvc6gC3eQOmIUchFG68Xd-x4JRcNZeJzmuf6GM6x8dQ58rAo-UR3jVadWSdAp9G_CswddLl90Mfc23kR8TlHL64lcDL1rI9rRd3OV1yKnIx4zjQeEdY-U863ChTXwplg9ldhVBisPELOvDkZplRwvbXB3jiuKUzRd7BX7H8O-dGlJAp-C9TkVbYC_mCrM_sqphXorSpcQrQ5JXPL1gSsdMnGu3qrw6REDZiZ_mwOYAEM6k6MeQsCQR3xxVaqi8pMQ4-o7U8XgnJQT7I7casdmzRDQz1d65jGmGYNXLGLPdRw07MHpA-b4J-KNcjfX_1EaX5Q65P-SGQ"
+SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vT5msMoKIvOtgoNeVJb41T2pRasfeAMwou0U_bz_4vqS_AzNIK_iHL88Z0OTN4za2_7RGO58S-jfCbD/pub?output=csv"
 
 @st.cache_data(ttl=3600) # Caches data for 1 hour so it loads fast
 def load_portfolio():
@@ -95,4 +95,5 @@ for index, row in portfolio.iterrows():
 
         fig.update_layout(height=400, margin=dict(l=0, r=0, t=30, b=0), 
                           xaxis_rangeslider_visible=False)
+
         st.plotly_chart(fig, use_container_width=True)
