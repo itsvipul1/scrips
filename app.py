@@ -9,32 +9,44 @@ st.set_page_config(page_title="My Portfolio Dashboard", layout="wide")
 st.title("📈 Positional Portfolio Dashboard")
 
 # Replace this string with your published Google Sheet CSV link
-SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vT5msMoKIvOtgoNeVJb41T2pRasfeAMwou0U_bz_4vqS_AzNIK_iHL88Z0OTN4za2_7RGO58S-jfCbD/pub?output=csv"
-
-@st.cache_data(ttl=3600) # Caches data for 1 hour so it loads fast
-def load_portfolio():
-    df = pd.read_csv(SHEET_CSV_URL)
-    return df
+SHEET_CSV_URL = "YOUR_GOOGLE_SHEET_CSV_LINK_HERE"
 
 @st.cache_data(ttl=3600)
-def fetch_stock_data(symbol, days=100):
+def load_portfolio():
+    return pd.read_csv(SHEET_CSV_URL)
+
+# NEW BATCH FETCH FUNCTION
+@st.cache_data(ttl=3600)
+def fetch_all_stock_data(symbols, days=100):
     end_date = datetime.date.today()
-    start_date = end_date - datetime.timedelta(days=days + 50) # Extra days to calculate 50-DMA
-    data = yf.download(symbol, start=start_date, end=end_date, progress=False)
+    start_date = end_date - datetime.timedelta(days=days + 50) # Extra days for 50-DMA
+    
+    # Download all symbols at once. 'threads=True' makes it lightning fast.
+    data = yf.download(symbols, start=start_date, end=end_date, threads=True, progress=False)
     return data
 
 # --- LOAD DATA ---
 try:
     portfolio = load_portfolio()
+    # Create a clean list of unique symbols from your sheet
+    symbols_list = portfolio['Symbol'].dropna().unique().tolist()
 except Exception as e:
     st.error("Error loading Google Sheet. Please check the link.")
+    st.stop()
+
+if not symbols_list:
+    st.warning("No symbols found in the Google Sheet.")
     st.stop()
 
 # --- DASHBOARD UI ---
 st.write("### Market Overview")
 days_to_plot = st.slider("Select chart timeframe (Days)", min_value=30, max_value=200, value=100)
 
-# Loop through each stock in your Google Sheet
+# Fetch ALL data in one single API call
+with st.spinner('Fetching bulk market data from Yahoo Finance...'):
+    market_data = fetch_all_stock_data(symbols_list, days_to_plot)
+
+# Loop through each stock in your Google Sheet to render the charts
 for index, row in portfolio.iterrows():
     symbol = row['Symbol']
     target = row['Target']
@@ -42,11 +54,23 @@ for index, row in portfolio.iterrows():
     
     st.markdown(f"---")
     
-    # Fetch data
-    df = fetch_stock_data(symbol)
+    try:
+        # Slice the large batch dataset for this specific symbol
+        if isinstance(market_data.columns, pd.MultiIndex):
+            # yfinance returns a MultiIndex when downloading multiple tickers
+            df = market_data.xs(symbol, level=1, axis=1).copy()
+        else:
+            # Fallback if there is only 1 ticker in the sheet
+            df = market_data.copy()
+    except KeyError:
+        st.warning(f"Could not find data for {symbol} in the downloaded batch. Check the symbol.")
+        continue
+
+    # Clean the data (drop weekend/holiday empty rows)
+    df = df.dropna(how='all')
     
-    if df.empty:
-        st.warning(f"No data found for {symbol}. Check the symbol name.")
+    if df.empty or ('Close' in df.columns and df['Close'].isna().all()):
+        st.warning(f"No valid price data available for {symbol}.")
         continue
 
     # Calculate 50-Day Moving Average
@@ -54,13 +78,18 @@ for index, row in portfolio.iterrows():
     
     # Slice dataframe to the user's selected timeframe
     plot_df = df.tail(days_to_plot)
-    current_price = plot_df['Close'].iloc[-1]
+    
+    if plot_df.empty:
+        continue
+        
+    # Force current_price to be a standard float to prevent formatting errors
+    current_price = float(plot_df['Close'].iloc[-1])
     
     # Calculate percentages
     pct_to_target = ((target - current_price) / current_price) * 100
     pct_to_stop = ((current_price - stop_loss) / current_price) * 100
 
-    # Layout: Metrics on the left, Chart on the right (stack vertically on mobile)
+    # Layout: Metrics on the left, Chart on the right
     col1, col2 = st.columns([1, 4])
     
     with col1:
@@ -95,5 +124,4 @@ for index, row in portfolio.iterrows():
 
         fig.update_layout(height=400, margin=dict(l=0, r=0, t=30, b=0), 
                           xaxis_rangeslider_visible=False)
-
         st.plotly_chart(fig, use_container_width=True)
