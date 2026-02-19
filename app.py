@@ -18,8 +18,8 @@ def load_portfolio():
 
 @st.cache_data(ttl=3600)
 def fetch_all_stock_data(symbols):
-    # Fetch 2 years of history so Weekly moving averages have enough data to calculate
-    data = yf.download(symbols, period="2y", threads=True, progress=False)
+    # Fetch 5 years of history to support long-term weekly charts and moving averages
+    data = yf.download(symbols, period="5y", threads=True, progress=False)
     return data
 
 def calculate_rsi(data, window=14):
@@ -51,7 +51,8 @@ st.write("### Market Overview")
 # Top Control Panel
 col_t1, col_t2 = st.columns(2)
 with col_t1:
-    days_to_plot = st.slider("Select chart visual timeframe (Days)", min_value=30, max_value=365, value=100)
+    # Increased slider range up to 5 years (1825 days), default set to 3 years (1095 days)
+    days_to_plot = st.slider("Select chart visual timeframe (Days)", min_value=30, max_value=1825, value=1095)
 with col_t2:
     chart_type = st.radio("Chart Timeframe", ["Daily", "Weekly"], horizontal=True)
 
@@ -63,7 +64,6 @@ summary_data = []
 for index, row in portfolio.iterrows():
     symbol = row['Symbol']
     
-    # Safely get PurchasedAt value (defaults to 0 if the column is missing or empty)
     try:
         purchased_at = float(row.get('PurchasedAt', 0))
         if purchased_at <= 0:
@@ -72,7 +72,6 @@ for index, row in portfolio.iterrows():
         continue
         
     try:
-        # Secure Price Extraction
         if isinstance(market_data.columns, pd.MultiIndex):
             if symbol in market_data.columns.levels[1]:
                 cp_raw = market_data['Close'][symbol].dropna().iloc[-1]
@@ -85,7 +84,6 @@ for index, row in portfolio.iterrows():
             cp_raw = cp_raw.iloc[-1]
         current_price = float(cp_raw)
         
-        # Calculate distance
         pct_change = ((current_price - purchased_at) / purchased_at) * 100
         
         summary_data.append({
@@ -97,11 +95,10 @@ for index, row in portfolio.iterrows():
     except Exception:
         pass
 
-# Render the Table if valid data exists
+# Render the Table
 if summary_data:
     st.write("#### 🎯 Portfolio Performance")
     summary_df = pd.DataFrame(summary_data)
-    # Sort so the stocks farthest away from purchase price (highest profit) are at the top
     summary_df = summary_df.sort_values(by="% Return", ascending=False)
     
     st.dataframe(
@@ -118,7 +115,6 @@ if summary_data:
 # --- INDIVIDUAL CHARTS ---
 st.write("#### 📊 Technical Charts")
 
-# Calculate the precise date to start slicing the visual chart
 start_plot_date = pd.to_datetime(datetime.date.today() - datetime.timedelta(days=days_to_plot))
 
 for index, row in portfolio.iterrows():
@@ -135,7 +131,6 @@ for index, row in portfolio.iterrows():
     st.markdown("---")
     
     try:
-        # Slice Batch Data
         if isinstance(market_data.columns, pd.MultiIndex):
             if symbol in market_data.columns.levels[1]:
                 df = market_data.xs(symbol, level=1, axis=1).copy()
@@ -153,14 +148,11 @@ for index, row in portfolio.iterrows():
     if df.empty or ('Close' not in df.columns) or df['Close'].isna().all():
         continue
 
-    # Force single dimension for columns
     for col in ['Open', 'High', 'Low', 'Close']:
         if isinstance(df[col], pd.DataFrame):
             df[col] = df[col].iloc[:, 0]
 
-    # --- WEEKLY CHART TOGGLE LOGIC ---
     if chart_type == "Weekly":
-        # Resample daily data into weekly data (ending on Friday)
         df = df.resample('W-FRI').agg({
             'Open': 'first', 
             'High': 'max', 
@@ -168,11 +160,9 @@ for index, row in portfolio.iterrows():
             'Close': 'last'
         }).dropna()
 
-    # Calculate Indicators on the full 2-year history
     df['50_MA'] = df['Close'].rolling(window=50).mean()
     df['RSI'] = calculate_rsi(df['Close'], window=14)
     
-    # Slice dataframe to the user's selected timeframe
     plot_df = df[df.index >= start_plot_date]
     
     if plot_df.empty:
@@ -188,7 +178,6 @@ for index, row in portfolio.iterrows():
     pct_to_stop = ((current_price - stop_loss) / current_price) * 100 if stop_loss > 0 else 0
     pct_return = ((current_price - purchased_at) / purchased_at) * 100 if purchased_at > 0 else 0
 
-    # Layout
     col1, col2 = st.columns([1, 4])
     
     with col1:
@@ -202,7 +191,6 @@ for index, row in portfolio.iterrows():
             st.metric("Stop Loss", f"₹{stop_loss:.2f}", f"-{pct_to_stop:.1f}% risk", delta_color="inverse")
 
     with col2:
-        # Create Subplots: Row 1 is Price (70% height), Row 2 is RSI (30% height)
         fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
                             vertical_spacing=0.05, row_heights=[0.7, 0.3])
         
@@ -216,7 +204,7 @@ for index, row in portfolio.iterrows():
         fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['50_MA'], 
                                  line=dict(color='blue', width=1.5), name='50 MA'), row=1, col=1)
         
-        # 3. Horizontal Lines
+        # 3. Horizontal Lines & Legend Entries
         if target > 0:
             fig.add_trace(go.Scatter(x=plot_df.index, y=[target]*len(plot_df), 
                                      line=dict(color='green', width=2, dash='dash'), name='Target'), row=1, col=1)
@@ -224,25 +212,22 @@ for index, row in portfolio.iterrows():
             fig.add_trace(go.Scatter(x=plot_df.index, y=[stop_loss]*len(plot_df), 
                                      line=dict(color='red', width=2, dash='dash'), name='Stop Loss'), row=1, col=1)
         if purchased_at > 0:
-            # Added Purple Dotted Line for Purchase Price
-            fig.add_trace(go.Scatter(x=plot_df.index, y=[purchased_at]*len(plot_df), 
-                                     line=dict(color='purple', width=2, dash='dot'), name='Purchased'), row=1, col=1)
+            # Invisible ghost trace just to insert the Purchase Price into the legend
+            fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers',
+                                     marker=dict(color='rgba(0,0,0,0)'), 
+                                     name=f'Purchased @ ₹{purchased_at:.2f}'), row=1, col=1)
 
-        # 4. RSI Chart (Bottom Subplot)
+        # 4. RSI Chart
         fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['RSI'], 
                                  line=dict(color='orange', width=1.5), name='RSI'), row=2, col=1)
         
-        # Add RSI Overbought/Oversold thresholds (70 and 30)
         fig.add_trace(go.Scatter(x=plot_df.index, y=[70]*len(plot_df), 
                                  line=dict(color='gray', width=1, dash='dash'), showlegend=False), row=2, col=1)
         fig.add_trace(go.Scatter(x=plot_df.index, y=[30]*len(plot_df), 
                                  line=dict(color='gray', width=1, dash='dash'), showlegend=False), row=2, col=1)
         
-        # Cleanup chart appearance
         fig.update_layout(height=500, margin=dict(l=0, r=0, t=30, b=0), 
                           xaxis_rangeslider_visible=False, xaxis2_rangeslider_visible=False)
-        fig.update_yaxes(range=[0, 100], row=2, col=1) # Lock RSI Y-axis from 0 to 100
+        fig.update_yaxes(range=[0, 100], row=2, col=1)
         
         st.plotly_chart(fig, use_container_width=True)
-
-
