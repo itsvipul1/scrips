@@ -19,16 +19,13 @@ def load_portfolio():
 @st.cache_data(ttl=3600)
 def fetch_all_stock_data(symbols, days=100):
     end_date = datetime.date.today()
-    start_date = end_date - datetime.timedelta(days=days + 50) # Extra days for 50-DMA
-    
-    # Download all symbols at once. 'threads=True' makes it lightning fast.
+    start_date = end_date - datetime.timedelta(days=days + 50) 
     data = yf.download(symbols, start=start_date, end=end_date, threads=True, progress=False)
     return data
 
 # --- LOAD DATA ---
 try:
     portfolio = load_portfolio()
-    # Create a clean list of unique symbols from your sheet
     symbols_list = portfolio['Symbol'].dropna().unique().tolist()
 except Exception as e:
     st.error("Error loading Google Sheet. Please check the link.")
@@ -42,36 +39,50 @@ if not symbols_list:
 st.write("### Market Overview")
 days_to_plot = st.slider("Select chart timeframe (Days)", min_value=30, max_value=200, value=100)
 
-# Fetch ALL data in one single API call
 with st.spinner('Fetching bulk market data from Yahoo Finance...'):
     market_data = fetch_all_stock_data(symbols_list, days_to_plot)
 
-# Loop through each stock in your Google Sheet to render the charts
+# Loop through each stock in your Google Sheet
 for index, row in portfolio.iterrows():
     symbol = row['Symbol']
-    target = row['Target']
-    stop_loss = row['StopLoss']
     
-    st.markdown(f"---")
+    # 1. Force target and stop loss to be pure numbers (in case the sheet formats them as text)
+    try:
+        target = float(row['Target'])
+        stop_loss = float(row['StopLoss'])
+    except ValueError:
+        st.warning(f"Check your Google Sheet: Target or StopLoss for {symbol} is not a valid number.")
+        continue
+    
+    st.markdown("---")
     
     try:
-        # Slice the large batch dataset for this specific symbol
+        # 2. Slice the large batch dataset safely
         if isinstance(market_data.columns, pd.MultiIndex):
-            # yfinance returns a MultiIndex when downloading multiple tickers
-            df = market_data.xs(symbol, level=1, axis=1).copy()
+            # Check which level the ticker is on (yfinance changes this depending on the version)
+            if symbol in market_data.columns.levels[1]:
+                df = market_data.xs(symbol, level=1, axis=1).copy()
+            elif symbol in market_data.columns.levels[0]:
+                df = market_data.xs(symbol, level=0, axis=1).copy()
+            else:
+                st.warning(f"Could not find data for {symbol}.")
+                continue
         else:
-            # Fallback if there is only 1 ticker in the sheet
             df = market_data.copy()
-    except KeyError:
-        st.warning(f"Could not find data for {symbol} in the downloaded batch. Check the symbol.")
+    except Exception:
+        st.warning(f"Error processing data for {symbol}.")
         continue
 
-    # Clean the data (drop weekend/holiday empty rows)
+    # Clean the data
     df = df.dropna(how='all')
     
-    if df.empty or ('Close' in df.columns and df['Close'].isna().all()):
+    if df.empty or ('Close' not in df.columns) or df['Close'].isna().all():
         st.warning(f"No valid price data available for {symbol}.")
         continue
+
+    # 3. Force Close to be a 1-Dimensional Series (fixes overlapping columns)
+    if isinstance(df['Close'], pd.DataFrame):
+        df['Close'] = df['Close'].iloc[:, 0]
 
     # Calculate 50-Day Moving Average
     df['50_MA'] = df['Close'].rolling(window=50).mean()
@@ -82,8 +93,13 @@ for index, row in portfolio.iterrows():
     if plot_df.empty:
         continue
         
-    # Force current_price to be a standard float to prevent formatting errors
-    current_price = float(plot_df['Close'].iloc[-1])
+    # 4. ABSOLUTE BULLETPROOF PRICE EXTRACTION
+    current_price_raw = plot_df['Close'].iloc[-1]
+    # Keep unwrapping the data until it's a raw number
+    if isinstance(current_price_raw, (pd.Series, pd.DataFrame)):
+        current_price_raw = current_price_raw.iloc[-1]
+    
+    current_price = float(current_price_raw)
     
     # Calculate percentages
     pct_to_target = ((target - current_price) / current_price) * 100
@@ -99,15 +115,16 @@ for index, row in portfolio.iterrows():
         st.metric("Stop Loss", f"₹{stop_loss:.2f}", f"-{pct_to_stop:.1f}% risk", delta_color="inverse")
 
     with col2:
-        # Create interactive Plotly Candlestick Chart
         fig = go.Figure()
         
-        # Candlesticks
+        # Safely extract open, high, low for candlestick chart
+        open_p = plot_df['Open'].iloc[:, 0] if isinstance(plot_df['Open'], pd.DataFrame) else plot_df['Open']
+        high_p = plot_df['High'].iloc[:, 0] if isinstance(plot_df['High'], pd.DataFrame) else plot_df['High']
+        low_p = plot_df['Low'].iloc[:, 0] if isinstance(plot_df['Low'], pd.DataFrame) else plot_df['Low']
+        close_p = plot_df['Close']
+        
         fig.add_trace(go.Candlestick(x=plot_df.index,
-                                     open=plot_df['Open'],
-                                     high=plot_df['High'],
-                                     low=plot_df['Low'],
-                                     close=plot_df['Close'],
+                                     open=open_p, high=high_p, low=low_p, close=close_p,
                                      name='Price'))
         
         # 50 DMA
