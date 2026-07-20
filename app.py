@@ -14,7 +14,7 @@ st.title("📈 Positional Trading Dashboard")
 PORTFOLIO_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vT5msMoKIvOtgoNeVJb41T2pRasfeAMwou0U_bz_4vqS_AzNIK_iHL88Z0OTN4za2_7RGO58S-jfCbD/pub?gid=0&single=true&output=csv"
 WATCHLIST_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vT5msMoKIvOtgoNeVJb41T2pRasfeAMwou0U_bz_4vqS_AzNIK_iHL88Z0OTN4za2_7RGO58S-jfCbD/pub?gid=186620296&single=true&output=csv"
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=300)
 def load_csv(url):
     try:
         return pd.read_csv(url)
@@ -26,6 +26,16 @@ def fetch_all_stock_data(symbols):
     data = yf.download(symbols, period="5y", threads=True, progress=False)
     return data
 
+def get_safe_price(series):
+    """Bulletproof method to extract the latest valid price, fixing the NaN bug."""
+    clean_series = series.dropna()
+    if not clean_series.empty:
+        val = clean_series.iloc[-1]
+        if isinstance(val, (pd.Series, pd.DataFrame)):
+            return float(val.iloc[-1])
+        return float(val)
+    return 0.0
+
 def calculate_rsi(data, window=14):
     delta = data.diff()
     gain = (delta.where(delta > 0, 0)).fillna(0)
@@ -34,6 +44,62 @@ def calculate_rsi(data, window=14):
     avg_loss = loss.ewm(alpha=1/window, adjust=False).mean()
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
+
+# --- LUXALGO SUPERTREND AI (CLUSTERING APPROXIMATION) ---
+def calculate_luxalgo_ai(df):
+    """
+    Python translation of the LuxAlgo SuperTrend AI logic.
+    Tests multiple ATR factors, ranks by performance, clusters the best, and returns the optimized signal.
+    """
+    high, low, close = df['High'].values, df['Low'].values, df['Close'].values
+    n = len(df)
+    
+    # Calculate ATR (RMA approach like TradingView)
+    tr = np.maximum(high - low, np.maximum(abs(high - np.roll(close, 1)), abs(low - np.roll(close, 1))))
+    tr[0] = high[0] - low[0]
+    atr = pd.Series(tr).ewm(alpha=1/10, adjust=False).mean().values
+    hl2 = (high + low) / 2
+    
+    factors = np.arange(1.0, 5.5, 0.5)
+    perfs = []
+    
+    # 1. Evaluate all factors
+    for f in factors:
+        up, dn = hl2 + atr * f, hl2 - atr * f
+        upper, lower, trend = np.zeros(n), np.zeros(n), np.ones(n)
+        
+        for i in range(1, n):
+            upper[i] = min(up[i], upper[i-1]) if close[i-1] < upper[i-1] else up[i]
+            lower[i] = max(dn[i], lower[i-1]) if close[i-1] > lower[i-1] else dn[i]
+            if close[i] > upper[i]: trend[i] = 1
+            elif close[i] < lower[i]: trend[i] = -1
+            else: trend[i] = trend[i-1]
+                
+        st_arr = np.where(trend == 1, lower, upper)
+        
+        # Calculate performance exactly like LuxAlgo
+        diff = np.sign(np.roll(close, 1) - st_arr)
+        change = np.append([0], np.diff(close))
+        perf_score = pd.Series(change * diff).ewm(alpha=2/(10+1), adjust=False).mean().iloc[-1]
+        perfs.append((f, perf_score))
+        
+    # 2. Cluster to find Target Factor (Best Performance Cluster)
+    perfs.sort(key=lambda x: x[1], reverse=True)
+    target_factor = np.mean([x[0] for x in perfs[:3]]) # Average of Top 3 clusters
+    
+    # 3. Calculate Final Optimized SuperTrend
+    up, dn = hl2 + atr * target_factor, hl2 - atr * target_factor
+    upper, lower, trend = np.zeros(n), np.zeros(n), np.ones(n)
+    
+    for i in range(1, n):
+        upper[i] = min(up[i], upper[i-1]) if close[i-1] < upper[i-1] else up[i]
+        lower[i] = max(dn[i], lower[i-1]) if close[i-1] > lower[i-1] else dn[i]
+        if close[i] > upper[i]: trend[i] = 1
+        elif close[i] < lower[i]: trend[i] = -1
+        else: trend[i] = trend[i-1]
+            
+    final_st = np.where(trend == 1, lower, upper)
+    return pd.Series(final_st, index=df.index), pd.Series(trend, index=df.index)
 
 # --- LOAD DATA ---
 portfolio = load_csv(PORTFOLIO_CSV_URL)
@@ -59,50 +125,46 @@ with st.spinner('Fetching bulk market data from Yahoo Finance...'):
 
 start_plot_date = pd.to_datetime(datetime.date.today() - datetime.timedelta(days=days_to_plot))
 
-# --- HELPER FUNCTION: RENDER CHARTS ---
+# --- HELPER FUNCTION: RENDER CHARTS & NEWS ---
 def render_stock_row(row, df, mode="portfolio"):
     symbol = row['Symbol']
     st.markdown("---")
     
-    # 1. Clean Data
     df = df.dropna(how='all')
-    if df.empty or ('Close' not in df.columns) or df['Close'].isna().all():
-        return
+    if df.empty or ('Close' not in df.columns) or df['Close'].dropna().empty: return
 
     for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
-        if isinstance(df[col], pd.DataFrame):
-            df[col] = df[col].iloc[:, 0]
+        if isinstance(df[col], pd.DataFrame): df[col] = df[col].iloc[:, 0]
 
     if chart_type == "Weekly":
         df = df.resample('W-FRI').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
 
-    # 2. Calculate Indicators
     df['50_MA'] = df['Close'].rolling(window=50).mean()
     df['RSI'] = calculate_rsi(df['Close'], window=14)
-    
-    # Define volume colors
     df['Vol_Color'] = np.where(df['Close'] >= df['Open'], 'rgba(0, 255, 0, 0.5)', 'rgba(255, 0, 0, 0.5)')
     
-    plot_df = df[df.index >= start_plot_date]
-    if plot_df.empty:
-        return
-        
-    current_price_raw = plot_df['Close'].iloc[-1]
-    if isinstance(current_price_raw, (pd.Series, pd.DataFrame)):
-        current_price_raw = current_price_raw.iloc[-1]
-    current_price = float(current_price_raw)
+    if mode == "watchlist":
+        st_line, st_trend = calculate_luxalgo_ai(df)
+        df['ST'] = st_line
+        df['ST_Trend'] = st_trend
     
-    # 3. Layout Generation
-    col1, col2 = st.columns([1, 4])
+    plot_df = df[df.index >= start_plot_date]
+    if plot_df.empty: return
+        
+    current_price = get_safe_price(plot_df['Close'])
+    if current_price == 0: return
+
+    # Layout: Metrics (1.5), Chart (4.5), News (2)
+    col1, col2, col3 = st.columns([1.5, 4.5, 2])
     
     with col1:
         st.subheader(symbol.replace('.NS', ''))
         st.metric("Current Price", f"₹{current_price:.2f}")
         
         if mode == "portfolio":
-            target = float(row.get('Target', 0))
-            stop_loss = float(row.get('StopLoss', 0))
-            purchased_at = float(row.get('PurchasedAt', 0))
+            target = float(row.get('Target', 0)) if not pd.isna(row.get('Target', 0)) else 0
+            stop_loss = float(row.get('StopLoss', 0)) if not pd.isna(row.get('StopLoss', 0)) else 0
+            purchased_at = float(row.get('PurchasedAt', 0)) if not pd.isna(row.get('PurchasedAt', 0)) else 0
             
             if purchased_at > 0:
                 pct_return = ((current_price - purchased_at) / purchased_at) * 100
@@ -114,8 +176,7 @@ def render_stock_row(row, df, mode="portfolio"):
                 pct_to_stop = ((current_price - stop_loss) / current_price) * 100
                 st.metric("Stop Loss", f"₹{stop_loss:.2f}", f"-{pct_to_stop:.1f}% risk", delta_color="inverse")
         else:
-            # Watchlist Mode
-            entry = float(row.get('EntryTrigger', 0))
+            entry = float(row.get('EntryTrigger', 0)) if not pd.isna(row.get('EntryTrigger', 0)) else 0
             notes = str(row.get('Notes', ''))
             if entry > 0:
                 pct_to_entry = ((entry - current_price) / current_price) * 100
@@ -124,48 +185,66 @@ def render_stock_row(row, df, mode="portfolio"):
                 st.info(f"📝 {notes}")
 
     with col2:
-        # Create 3-Row Subplot: Price (60%), Volume (20%), RSI (20%)
-        fig = make_subplots(rows=3, cols=1, shared_xaxes=True, 
-                            vertical_spacing=0.03, row_heights=[0.6, 0.2, 0.2])
+        fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.6, 0.2, 0.2])
         
-        # Row 1: Price Action
-        fig.add_trace(go.Candlestick(x=plot_df.index, open=plot_df['Open'], high=plot_df['High'], 
-                                     low=plot_df['Low'], close=plot_df['Close'], name='Price'), row=1, col=1)
+        fig.add_trace(go.Candlestick(x=plot_df.index, open=plot_df['Open'], high=plot_df['High'], low=plot_df['Low'], close=plot_df['Close'], name='Price'), row=1, col=1)
         fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['50_MA'], line=dict(color='blue', width=1.5), name='50 MA'), row=1, col=1)
         
-        # Add Horizontal Lines & Channels based on mode
         if mode == "portfolio":
             if target > 0: fig.add_trace(go.Scatter(x=plot_df.index, y=[target]*len(plot_df), line=dict(color='green', width=2, dash='dash'), name='Target'), row=1, col=1)
             if stop_loss > 0: fig.add_trace(go.Scatter(x=plot_df.index, y=[stop_loss]*len(plot_df), line=dict(color='red', width=2, dash='dash'), name='Stop Loss'), row=1, col=1)
             if purchased_at > 0: fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', marker=dict(color='rgba(0,0,0,0)'), name=f'Purchased @ ₹{purchased_at:.2f}'), row=1, col=1)
         else:
-            # Watchlist: Draw straight channel lines based on Google Sheet inputs
+            # LuxAlgo SuperTrend Plotted ONLY in Watchlist Mode
+            st_green = np.where(plot_df['ST_Trend'] == 1, plot_df['ST'], np.nan)
+            st_red = np.where(plot_df['ST_Trend'] == -1, plot_df['ST'], np.nan)
+            fig.add_trace(go.Scatter(x=plot_df.index, y=st_green, line=dict(color='teal', width=2), name='SuperTrend (Bull)'), row=1, col=1)
+            fig.add_trace(go.Scatter(x=plot_df.index, y=st_red, line=dict(color='red', width=2), name='SuperTrend (Bear)'), row=1, col=1)
+            
+            # Buy / Sell Arrows
+            trend_diff = plot_df['ST_Trend'].diff()
+            buy_sigs = plot_df[trend_diff == 2]
+            sell_sigs = plot_df[trend_diff == -2]
+            
+            fig.add_trace(go.Scatter(x=buy_sigs.index, y=buy_sigs['Low']*0.95, mode='markers', marker=dict(symbol='triangle-up', color='teal', size=14), name='Buy Signal'), row=1, col=1)
+            fig.add_trace(go.Scatter(x=sell_sigs.index, y=sell_sigs['High']*1.05, mode='markers', marker=dict(symbol='triangle-down', color='red', size=14), name='Sell Signal'), row=1, col=1)
+
             upper_ch = float(row.get('UpperChannel', 0)) if not pd.isna(row.get('UpperChannel', 0)) else 0
             lower_ch = float(row.get('LowerChannel', 0)) if not pd.isna(row.get('LowerChannel', 0)) else 0
             
             if upper_ch > 0 and lower_ch > 0:
-                # Creates a beautiful shaded straight channel
                 fig.add_hrect(y0=lower_ch, y1=upper_ch, line_width=1.5, fillcolor="gray", opacity=0.1, line_color="gray", row=1, col=1)
-            elif upper_ch > 0:
-                fig.add_trace(go.Scatter(x=plot_df.index, y=[upper_ch]*len(plot_df), line=dict(color='gray', width=1.5, dash='solid'), name='Upper Channel'), row=1, col=1)
-            elif lower_ch > 0:
-                fig.add_trace(go.Scatter(x=plot_df.index, y=[lower_ch]*len(plot_df), line=dict(color='gray', width=1.5, dash='solid'), name='Lower Channel'), row=1, col=1)
+            elif upper_ch > 0: fig.add_trace(go.Scatter(x=plot_df.index, y=[upper_ch]*len(plot_df), line=dict(color='gray', width=1.5, dash='solid'), name='Upper Channel'), row=1, col=1)
+            elif lower_ch > 0: fig.add_trace(go.Scatter(x=plot_df.index, y=[lower_ch]*len(plot_df), line=dict(color='gray', width=1.5, dash='solid'), name='Lower Channel'), row=1, col=1)
+            if entry > 0: fig.add_trace(go.Scatter(x=plot_df.index, y=[entry]*len(plot_df), line=dict(color='purple', width=2, dash='dash'), name='Entry Trigger'), row=1, col=1)
 
-            if entry > 0:
-                fig.add_trace(go.Scatter(x=plot_df.index, y=[entry]*len(plot_df), line=dict(color='purple', width=2, dash='dash'), name='Entry Trigger'), row=1, col=1)
-
-        # Row 2: Volume
         fig.add_trace(go.Bar(x=plot_df.index, y=plot_df['Volume'], marker_color=plot_df['Vol_Color'], name='Volume'), row=2, col=1)
-        
-        # Row 3: RSI
         fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['RSI'], line=dict(color='orange', width=1.5), name='RSI'), row=3, col=1)
         fig.add_trace(go.Scatter(x=plot_df.index, y=[70]*len(plot_df), line=dict(color='gray', width=1, dash='dash'), showlegend=False), row=3, col=1)
         fig.add_trace(go.Scatter(x=plot_df.index, y=[30]*len(plot_df), line=dict(color='gray', width=1, dash='dash'), showlegend=False), row=3, col=1)
         
         fig.update_layout(height=650, margin=dict(l=0, r=0, t=30, b=0), xaxis_rangeslider_visible=False, showlegend=True)
         fig.update_yaxes(range=[0, 100], row=3, col=1)
-        
         st.plotly_chart(fig, use_container_width=True)
+
+    with col3:
+        # News Box Rendering
+        st.markdown("##### 📰 Latest News")
+        with st.container(height=600):
+            try:
+                # Use YFinance to pull recent news dictionary
+                ticker = yf.Ticker(symbol)
+                news_items = ticker.news
+                if news_items:
+                    for article in news_items[:5]: # Show top 5
+                        title = article.get('title', 'No Title')
+                        link = article.get('link', '#')
+                        st.markdown(f"- [{title}]({link})")
+                        st.divider()
+                else:
+                    st.write("No recent news found.")
+            except Exception:
+                st.write("Unable to load news at this time.")
 
 def extract_safe_df(market_data, symbol):
     try:
@@ -173,8 +252,7 @@ def extract_safe_df(market_data, symbol):
             if symbol in market_data.columns.levels[1]: return market_data.xs(symbol, level=1, axis=1).copy()
             elif symbol in market_data.columns.levels[0]: return market_data.xs(symbol, level=0, axis=1).copy()
         else: return market_data.copy()
-    except Exception:
-        pass
+    except Exception: pass
     return pd.DataFrame()
 
 # --- BUILD TABS ---
@@ -187,16 +265,16 @@ with tab1:
         for index, row in portfolio.iterrows():
             symbol = row['Symbol']
             df = extract_safe_df(market_data, symbol)
-            if df.empty or 'Close' not in df.columns: continue
-            try:
-                purchased_at = float(row.get('PurchasedAt', 0))
-                if purchased_at <= 0: continue
-                cp_raw = df['Close'].dropna().iloc[-1]
-                if isinstance(cp_raw, (pd.Series, pd.DataFrame)): cp_raw = cp_raw.iloc[-1]
-                current_price = float(cp_raw)
-                pct_change = ((current_price - purchased_at) / purchased_at) * 100
-                summary_data.append({"Symbol": symbol.replace('.NS', ''), "Purchased At": purchased_at, "Current Price": current_price, "% Return": pct_change})
-            except Exception: pass
+            if df.empty: continue
+            
+            purchased_at = float(row.get('PurchasedAt', 0)) if not pd.isna(row.get('PurchasedAt', 0)) else 0
+            if purchased_at <= 0: continue
+            
+            current_price = get_safe_price(df['Close'])
+            if current_price == 0: continue
+                
+            pct_change = ((current_price - purchased_at) / purchased_at) * 100
+            summary_data.append({"Symbol": symbol.replace('.NS', ''), "Purchased At": purchased_at, "Current Price": current_price, "% Return": pct_change})
             
         if summary_data:
             summary_df = pd.DataFrame(summary_data).sort_values(by="% Return", ascending=False)
@@ -213,15 +291,14 @@ with tab2:
         for index, row in watchlist.iterrows():
             symbol = row['Symbol']
             df = extract_safe_df(market_data, symbol)
-            if df.empty or 'Close' not in df.columns: continue
-            try:
-                entry = float(row.get('EntryTrigger', 0))
-                cp_raw = df['Close'].dropna().iloc[-1]
-                if isinstance(cp_raw, (pd.Series, pd.DataFrame)): cp_raw = cp_raw.iloc[-1]
-                current_price = float(cp_raw)
-                dist = ((entry - current_price) / current_price) * 100 if entry > 0 else 0
-                watch_summary.append({"Symbol": symbol.replace('.NS', ''), "Current Price": current_price, "Entry Trigger": entry, "% to Breakout": dist, "Notes": row.get('Notes', '')})
-            except Exception: pass
+            if df.empty: continue
+            
+            entry = float(row.get('EntryTrigger', 0)) if not pd.isna(row.get('EntryTrigger', 0)) else 0
+            current_price = get_safe_price(df['Close'])
+            if current_price == 0: continue
+                
+            dist = ((entry - current_price) / current_price) * 100 if entry > 0 else 0
+            watch_summary.append({"Symbol": symbol.replace('.NS', ''), "Current Price": current_price, "Entry Trigger": entry, "% to Breakout": dist, "Notes": str(row.get('Notes', ''))})
 
         if watch_summary:
             w_df = pd.DataFrame(watch_summary).sort_values(by="% to Breakout", ascending=True)
