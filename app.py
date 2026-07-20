@@ -232,7 +232,6 @@ def render_stock_row(row, df, mode="portfolio"):
         st.markdown("##### 📰 Latest News")
         with st.container(height=600):
             try:
-                # Use YFinance to pull recent news dictionary
                 ticker = yf.Ticker(symbol)
                 news_items = ticker.news
                 
@@ -242,19 +241,37 @@ def render_stock_row(row, df, mode="portfolio"):
                         if valid_articles >= 5: # Limit to top 5 valid articles
                             break
                             
+                        title = "No Title"
+                        link = "#"
+                        pub_date = None
+                        
                         # Handle NEW YFinance nested dictionary structure
                         if 'content' in article:
                             content = article['content']
                             title = content.get('title', 'No Title')
                             link = content.get('canonicalUrl', {}).get('url', '#')
-                        # Handle OLD YFinance structure (just in case)
+                            pub_date = content.get('pubDate') or content.get('providerPublishTime')
+                        # Handle OLD YFinance structure
                         else:
                             title = article.get('title', 'No Title')
                             link = article.get('link', '#')
+                            pub_date = article.get('providerPublishTime')
                             
-                        # Only render if a real title exists
+                        # Format Date safely
+                        date_label = ""
+                        if pub_date:
+                            try:
+                                if isinstance(pub_date, (int, float)):
+                                    dt = datetime.datetime.fromtimestamp(pub_date)
+                                else:
+                                    dt = pd.to_datetime(pub_date)
+                                date_label = f"`{dt.strftime('%d %b')}` "
+                            except Exception:
+                                date_label = ""
+
+                        # Render if valid
                         if title and title != 'No Title':
-                            st.markdown(f"- [{title}]({link})")
+                            st.markdown(f"- {date_label}[{title}]({link})")
                             st.divider()
                             valid_articles += 1
                             
@@ -264,6 +281,7 @@ def render_stock_row(row, df, mode="portfolio"):
                     st.write("No recent news found.")
             except Exception:
                 st.write("Unable to load news at this time.")
+                
 def extract_safe_df(market_data, symbol):
     try:
         if isinstance(market_data.columns, pd.MultiIndex):
