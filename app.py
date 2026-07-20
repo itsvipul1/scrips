@@ -235,17 +235,35 @@ def render_stock_row(row, df, mode="portfolio"):
                 # Use YFinance to pull recent news dictionary
                 ticker = yf.Ticker(symbol)
                 news_items = ticker.news
+                
                 if news_items:
-                    for article in news_items[:5]: # Show top 5
-                        title = article.get('title', 'No Title')
-                        link = article.get('link', '#')
-                        st.markdown(f"- [{title}]({link})")
-                        st.divider()
+                    valid_articles = 0
+                    for article in news_items:
+                        if valid_articles >= 5: # Limit to top 5 valid articles
+                            break
+                            
+                        # Handle NEW YFinance nested dictionary structure
+                        if 'content' in article:
+                            content = article['content']
+                            title = content.get('title', 'No Title')
+                            link = content.get('canonicalUrl', {}).get('url', '#')
+                        # Handle OLD YFinance structure (just in case)
+                        else:
+                            title = article.get('title', 'No Title')
+                            link = article.get('link', '#')
+                            
+                        # Only render if a real title exists
+                        if title and title != 'No Title':
+                            st.markdown(f"- [{title}]({link})")
+                            st.divider()
+                            valid_articles += 1
+                            
+                    if valid_articles == 0:
+                        st.write("No recent news found.")
                 else:
                     st.write("No recent news found.")
             except Exception:
                 st.write("Unable to load news at this time.")
-
 def extract_safe_df(market_data, symbol):
     try:
         if isinstance(market_data.columns, pd.MultiIndex):
