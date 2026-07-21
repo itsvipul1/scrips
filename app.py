@@ -27,7 +27,6 @@ def fetch_all_stock_data(symbols):
     return data
 
 def get_safe_price(series):
-    """Bulletproof method to extract the latest valid price, fixing the NaN bug."""
     clean_series = series.dropna()
     if not clean_series.empty:
         val = clean_series.iloc[-1]
@@ -47,14 +46,9 @@ def calculate_rsi(data, window=14):
 
 # --- LUXALGO SUPERTREND AI (CLUSTERING APPROXIMATION) ---
 def calculate_luxalgo_ai(df):
-    """
-    Python translation of the LuxAlgo SuperTrend AI logic.
-    Tests multiple ATR factors, ranks by performance, clusters the best, and returns the optimized signal.
-    """
     high, low, close = df['High'].values, df['Low'].values, df['Close'].values
     n = len(df)
     
-    # Calculate ATR (RMA approach like TradingView)
     tr = np.maximum(high - low, np.maximum(abs(high - np.roll(close, 1)), abs(low - np.roll(close, 1))))
     tr[0] = high[0] - low[0]
     atr = pd.Series(tr).ewm(alpha=1/10, adjust=False).mean().values
@@ -63,7 +57,6 @@ def calculate_luxalgo_ai(df):
     factors = np.arange(1.0, 5.5, 0.5)
     perfs = []
     
-    # 1. Evaluate all factors
     for f in factors:
         up, dn = hl2 + atr * f, hl2 - atr * f
         upper, lower, trend = np.zeros(n), np.zeros(n), np.ones(n)
@@ -77,17 +70,14 @@ def calculate_luxalgo_ai(df):
                 
         st_arr = np.where(trend == 1, lower, upper)
         
-        # Calculate performance exactly like LuxAlgo
         diff = np.sign(np.roll(close, 1) - st_arr)
         change = np.append([0], np.diff(close))
         perf_score = pd.Series(change * diff).ewm(alpha=2/(10+1), adjust=False).mean().iloc[-1]
         perfs.append((f, perf_score))
         
-    # 2. Cluster to find Target Factor (Best Performance Cluster)
     perfs.sort(key=lambda x: x[1], reverse=True)
-    target_factor = np.mean([x[0] for x in perfs[:3]]) # Average of Top 3 clusters
+    target_factor = np.mean([x[0] for x in perfs[:3]]) 
     
-    # 3. Calculate Final Optimized SuperTrend
     up, dn = hl2 + atr * target_factor, hl2 - atr * target_factor
     upper, lower, trend = np.zeros(n), np.zeros(n), np.ones(n)
     
@@ -141,7 +131,15 @@ def render_stock_row(row, df, mode="portfolio"):
 
     df['50_MA'] = df['Close'].rolling(window=50).mean()
     df['RSI'] = calculate_rsi(df['Close'], window=14)
-    df['Vol_Color'] = np.where(df['Close'] >= df['Open'], 'rgba(0, 255, 0, 0.5)', 'rgba(255, 0, 0, 0.5)')
+    
+    # TradingView Exact Colors
+    tv_bg = "#131722"
+    tv_grid = "#2B2B36"
+    tv_text = "#B2B5BE"
+    bull_color = "#26A69A"
+    bear_color = "#EF5350"
+    
+    df['Vol_Color'] = np.where(df['Close'] >= df['Open'], 'rgba(38, 166, 154, 0.5)', 'rgba(239, 83, 80, 0.5)')
     
     if mode == "watchlist":
         st_line, st_trend = calculate_luxalgo_ai(df)
@@ -154,7 +152,6 @@ def render_stock_row(row, df, mode="portfolio"):
     current_price = get_safe_price(plot_df['Close'])
     if current_price == 0: return
 
-    # Layout: Metrics (1.5), Chart (4.5), News (2)
     col1, col2, col3 = st.columns([1.5, 4.5, 2])
     
     with col1:
@@ -185,52 +182,82 @@ def render_stock_row(row, df, mode="portfolio"):
                 st.info(f"📝 {notes}")
 
     with col2:
-        fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.6, 0.2, 0.2])
+        # Tighter spacing to mimic TradingView
+        fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.01, row_heights=[0.6, 0.2, 0.2])
         
-        fig.add_trace(go.Candlestick(x=plot_df.index, open=plot_df['Open'], high=plot_df['High'], low=plot_df['Low'], close=plot_df['Close'], name='Price'), row=1, col=1)
-        fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['50_MA'], line=dict(color='blue', width=1.5), name='50 MA'), row=1, col=1)
+        # TradingView Styled Candlesticks
+        fig.add_trace(go.Candlestick(
+            x=plot_df.index, open=plot_df['Open'], high=plot_df['High'], low=plot_df['Low'], close=plot_df['Close'],
+            name='Price',
+            increasing_line_color=bull_color, increasing_fillcolor=bull_color,
+            decreasing_line_color=bear_color, decreasing_fillcolor=bear_color
+        ), row=1, col=1)
+        
+        # 50 DMA
+        fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['50_MA'], line=dict(color='#2962FF', width=1.5), name='50 MA'), row=1, col=1)
         
         if mode == "portfolio":
-            if target > 0: fig.add_trace(go.Scatter(x=plot_df.index, y=[target]*len(plot_df), line=dict(color='green', width=2, dash='dash'), name='Target'), row=1, col=1)
-            if stop_loss > 0: fig.add_trace(go.Scatter(x=plot_df.index, y=[stop_loss]*len(plot_df), line=dict(color='red', width=2, dash='dash'), name='Stop Loss'), row=1, col=1)
+            if target > 0: fig.add_trace(go.Scatter(x=plot_df.index, y=[target]*len(plot_df), line=dict(color=bull_color, width=1.5, dash='dash'), name='Target'), row=1, col=1)
+            if stop_loss > 0: fig.add_trace(go.Scatter(x=plot_df.index, y=[stop_loss]*len(plot_df), line=dict(color=bear_color, width=1.5, dash='dash'), name='Stop Loss'), row=1, col=1)
             if purchased_at > 0: fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', marker=dict(color='rgba(0,0,0,0)'), name=f'Purchased @ ₹{purchased_at:.2f}'), row=1, col=1)
         else:
-            # LuxAlgo SuperTrend Plotted ONLY in Watchlist Mode
             st_green = np.where(plot_df['ST_Trend'] == 1, plot_df['ST'], np.nan)
             st_red = np.where(plot_df['ST_Trend'] == -1, plot_df['ST'], np.nan)
-            fig.add_trace(go.Scatter(x=plot_df.index, y=st_green, line=dict(color='teal', width=2), name='SuperTrend (Bull)'), row=1, col=1)
-            fig.add_trace(go.Scatter(x=plot_df.index, y=st_red, line=dict(color='red', width=2), name='SuperTrend (Bear)'), row=1, col=1)
+            fig.add_trace(go.Scatter(x=plot_df.index, y=st_green, line=dict(color=bull_color, width=2), name='SuperTrend (Bull)'), row=1, col=1)
+            fig.add_trace(go.Scatter(x=plot_df.index, y=st_red, line=dict(color=bear_color, width=2), name='SuperTrend (Bear)'), row=1, col=1)
             
-            # Buy / Sell Arrows
             trend_diff = plot_df['ST_Trend'].diff()
             buy_sigs = plot_df[trend_diff == 2]
             sell_sigs = plot_df[trend_diff == -2]
             
-            fig.add_trace(go.Scatter(x=buy_sigs.index, y=buy_sigs['Low']*0.95, mode='markers', marker=dict(symbol='triangle-up', color='teal', size=14), name='Buy Signal'), row=1, col=1)
-            fig.add_trace(go.Scatter(x=sell_sigs.index, y=sell_sigs['High']*1.05, mode='markers', marker=dict(symbol='triangle-down', color='red', size=14), name='Sell Signal'), row=1, col=1)
+            fig.add_trace(go.Scatter(x=buy_sigs.index, y=buy_sigs['Low']*0.95, mode='markers', marker=dict(symbol='triangle-up', color=bull_color, size=12), name='Buy Signal'), row=1, col=1)
+            fig.add_trace(go.Scatter(x=sell_sigs.index, y=sell_sigs['High']*1.05, mode='markers', marker=dict(symbol='triangle-down', color=bear_color, size=12), name='Sell Signal'), row=1, col=1)
 
             upper_ch = float(row.get('UpperChannel', 0)) if not pd.isna(row.get('UpperChannel', 0)) else 0
             lower_ch = float(row.get('LowerChannel', 0)) if not pd.isna(row.get('LowerChannel', 0)) else 0
             
             if upper_ch > 0 and lower_ch > 0:
-                fig.add_hrect(y0=lower_ch, y1=upper_ch, line_width=1.5, fillcolor="gray", opacity=0.1, line_color="gray", row=1, col=1)
-            elif upper_ch > 0: fig.add_trace(go.Scatter(x=plot_df.index, y=[upper_ch]*len(plot_df), line=dict(color='gray', width=1.5, dash='solid'), name='Upper Channel'), row=1, col=1)
-            elif lower_ch > 0: fig.add_trace(go.Scatter(x=plot_df.index, y=[lower_ch]*len(plot_df), line=dict(color='gray', width=1.5, dash='solid'), name='Lower Channel'), row=1, col=1)
-            if entry > 0: fig.add_trace(go.Scatter(x=plot_df.index, y=[entry]*len(plot_df), line=dict(color='purple', width=2, dash='dash'), name='Entry Trigger'), row=1, col=1)
+                fig.add_hrect(y0=lower_ch, y1=upper_ch, line_width=1.5, fillcolor="#FFD600", opacity=0.05, line_color="#FFD600", row=1, col=1)
+            elif upper_ch > 0: fig.add_trace(go.Scatter(x=plot_df.index, y=[upper_ch]*len(plot_df), line=dict(color='#FFD600', width=1.5, dash='solid'), name='Upper Channel'), row=1, col=1)
+            elif lower_ch > 0: fig.add_trace(go.Scatter(x=plot_df.index, y=[lower_ch]*len(plot_df), line=dict(color='#FFD600', width=1.5, dash='solid'), name='Lower Channel'), row=1, col=1)
+            if entry > 0: fig.add_trace(go.Scatter(x=plot_df.index, y=[entry]*len(plot_df), line=dict(color='#E040FB', width=1.5, dash='dash'), name='Entry Trigger'), row=1, col=1)
 
+        # Volume
         fig.add_trace(go.Bar(x=plot_df.index, y=plot_df['Volume'], marker_color=plot_df['Vol_Color'], name='Volume'), row=2, col=1)
-        fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['RSI'], line=dict(color='orange', width=1.5), name='RSI'), row=3, col=1)
-        fig.add_trace(go.Scatter(x=plot_df.index, y=[70]*len(plot_df), line=dict(color='gray', width=1, dash='dash'), showlegend=False), row=3, col=1)
-        fig.add_trace(go.Scatter(x=plot_df.index, y=[30]*len(plot_df), line=dict(color='gray', width=1, dash='dash'), showlegend=False), row=3, col=1)
         
-        fig.update_layout(height=650, margin=dict(l=0, r=0, t=30, b=0), xaxis_rangeslider_visible=False, showlegend=True)
+        # RSI
+        fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['RSI'], line=dict(color='#7E57C2', width=1.5), name='RSI'), row=3, col=1)
+        fig.add_hrect(y0=30, y1=70, fillcolor="#7E57C2", opacity=0.1, line_width=0, row=3, col=1)
+        fig.add_trace(go.Scatter(x=plot_df.index, y=[70]*len(plot_df), line=dict(color=tv_grid, width=1, dash='dash'), showlegend=False), row=3, col=1)
+        fig.add_trace(go.Scatter(x=plot_df.index, y=[30]*len(plot_df), line=dict(color=tv_grid, width=1, dash='dash'), showlegend=False), row=3, col=1)
+        
+        # TRADINGVIEW STYLING OVERHAUL
+        fig.update_layout(
+            height=600, 
+            margin=dict(l=0, r=0, t=10, b=0), 
+            xaxis_rangeslider_visible=False, 
+            showlegend=False, # Hide bulky legend for TV look
+            plot_bgcolor=tv_bg,
+            paper_bgcolor=tv_bg,
+            font=dict(color=tv_text, size=10),
+            dragmode='pan', # Crucial: Enables click-and-drag panning like TV
+            hovermode='x unified'
+        )
+        
+        # Style X and Y axes to match TradingView
+        fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor=tv_grid, zeroline=False, showspikes=True, spikemode='across', spikesnap='cursor', showline=False, spikedash='dot', spikecolor=tv_text)
+        
+        # Move Y-Axis to the right side (Standard financial charting)
+        fig.update_yaxes(side='right', showgrid=True, gridwidth=1, gridcolor=tv_grid, zeroline=False, tickfont=dict(color=tv_text))
         fig.update_yaxes(range=[0, 100], row=3, col=1)
-        st.plotly_chart(fig, use_container_width=True)
+        
+        # Scroll Zoom configuration injected here
+        st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True, 'displayModeBar': False})
 
     with col3:
         # News Box Rendering
         st.markdown("##### 📰 Latest News")
-        with st.container(height=600):
+        with st.container(height=550):
             try:
                 ticker = yf.Ticker(symbol)
                 news_items = ticker.news
@@ -238,26 +265,23 @@ def render_stock_row(row, df, mode="portfolio"):
                 if news_items:
                     valid_articles = 0
                     for article in news_items:
-                        if valid_articles >= 5: # Limit to top 5 valid articles
+                        if valid_articles >= 5: 
                             break
                             
                         title = "No Title"
                         link = "#"
                         pub_date = None
                         
-                        # Handle NEW YFinance nested dictionary structure
                         if 'content' in article:
                             content = article['content']
                             title = content.get('title', 'No Title')
                             link = content.get('canonicalUrl', {}).get('url', '#')
                             pub_date = content.get('pubDate') or content.get('providerPublishTime')
-                        # Handle OLD YFinance structure
                         else:
                             title = article.get('title', 'No Title')
                             link = article.get('link', '#')
                             pub_date = article.get('providerPublishTime')
                             
-                        # Format Date safely
                         date_label = ""
                         if pub_date:
                             try:
@@ -269,7 +293,6 @@ def render_stock_row(row, df, mode="portfolio"):
                             except Exception:
                                 date_label = ""
 
-                        # Render if valid
                         if title and title != 'No Title':
                             st.markdown(f"- {date_label}[{title}]({link})")
                             st.divider()
