@@ -1,4 +1,3 @@
-
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -24,19 +23,16 @@ def load_csv(url):
 
 @st.cache_data(ttl=3600)
 def fetch_all_stock_data(symbols):
-    # Heavy 5-year historical fetch
-    return yf.download(symbols, period="5y", threads=True, progress=False)
-
-@st.cache_data(ttl=300) # Updates every 5 minutes
-def fetch_live_prices(symbols):
-    # Quick real-time intraday fetch to outsmart Yahoo's daily candle delay
-    return yf.download(symbols, period="1d", interval="1m", threads=True, progress=False)
+    data = yf.download(symbols, period="5y", threads=True, progress=False)
+    return data
 
 def get_safe_price(series):
+    """Bulletproof method to extract the latest valid price, fixing the NaN bug."""
     clean_series = series.dropna()
     if not clean_series.empty:
         val = clean_series.iloc[-1]
-        if isinstance(val, (pd.Series, pd.DataFrame)): return float(val.iloc[-1])
+        if isinstance(val, (pd.Series, pd.DataFrame)):
+            return float(val.iloc[-1])
         return float(val)
     return 0.0
 
@@ -49,34 +45,49 @@ def calculate_rsi(data, window=14):
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
+# --- LUXALGO SUPERTREND AI (CLUSTERING APPROXIMATION) ---
 def calculate_luxalgo_ai(df):
+    """
+    Python translation of the LuxAlgo SuperTrend AI logic.
+    Tests multiple ATR factors, ranks by performance, clusters the best, and returns the optimized signal.
+    """
     high, low, close = df['High'].values, df['Low'].values, df['Close'].values
     n = len(df)
+    
+    # Calculate ATR (RMA approach like TradingView)
     tr = np.maximum(high - low, np.maximum(abs(high - np.roll(close, 1)), abs(low - np.roll(close, 1))))
     tr[0] = high[0] - low[0]
     atr = pd.Series(tr).ewm(alpha=1/10, adjust=False).mean().values
     hl2 = (high + low) / 2
+    
     factors = np.arange(1.0, 5.5, 0.5)
     perfs = []
     
+    # 1. Evaluate all factors
     for f in factors:
         up, dn = hl2 + atr * f, hl2 - atr * f
         upper, lower, trend = np.zeros(n), np.zeros(n), np.ones(n)
+        
         for i in range(1, n):
             upper[i] = min(up[i], upper[i-1]) if close[i-1] < upper[i-1] else up[i]
             lower[i] = max(dn[i], lower[i-1]) if close[i-1] > lower[i-1] else dn[i]
             if close[i] > upper[i]: trend[i] = 1
             elif close[i] < lower[i]: trend[i] = -1
             else: trend[i] = trend[i-1]
+                
         st_arr = np.where(trend == 1, lower, upper)
+        
+        # Calculate performance exactly like LuxAlgo
         diff = np.sign(np.roll(close, 1) - st_arr)
         change = np.append([0], np.diff(close))
         perf_score = pd.Series(change * diff).ewm(alpha=2/(10+1), adjust=False).mean().iloc[-1]
         perfs.append((f, perf_score))
         
+    # 2. Cluster to find Target Factor (Best Performance Cluster)
     perfs.sort(key=lambda x: x[1], reverse=True)
-    target_factor = np.mean([x[0] for x in perfs[:3]]) 
+    target_factor = np.mean([x[0] for x in perfs[:3]]) # Average of Top 3 clusters
     
+    # 3. Calculate Final Optimized SuperTrend
     up, dn = hl2 + atr * target_factor, hl2 - atr * target_factor
     upper, lower, trend = np.zeros(n), np.zeros(n), np.ones(n)
     
@@ -90,52 +101,6 @@ def calculate_luxalgo_ai(df):
     final_st = np.where(trend == 1, lower, upper)
     return pd.Series(final_st, index=df.index), pd.Series(trend, index=df.index)
 
-# --- THE LIVE CANDLE INJECTOR ---
-def extract_safe_df(market_data, symbol, live_market_data=None):
-    try:
-        if isinstance(market_data.columns, pd.MultiIndex):
-            if symbol in market_data.columns.levels[1]: df = market_data.xs(symbol, level=1, axis=1).copy()
-            elif symbol in market_data.columns.levels[0]: df = market_data.xs(symbol, level=0, axis=1).copy()
-            else: return pd.DataFrame()
-        else: df = market_data.copy()
-        
-        df = df.dropna(how='all')
-        if df.empty or 'Close' not in df.columns: return pd.DataFrame()
-        
-        for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
-            if col in df.columns and isinstance(df[col], pd.DataFrame): df[col] = df[col].iloc[:, 0]
-            
-        # Manually stitch the live 1-minute data onto the end of the daily chart
-        if live_market_data is not None:
-            if isinstance(live_market_data.columns, pd.MultiIndex):
-                if symbol in live_market_data.columns.levels[1]: live_df = live_market_data.xs(symbol, level=1, axis=1).copy()
-                elif symbol in live_market_data.columns.levels[0]: live_df = live_market_data.xs(symbol, level=0, axis=1).copy()
-                else: live_df = pd.DataFrame()
-            else: live_df = live_market_data.copy()
-            
-            live_df = live_df.dropna(how='all')
-            if not live_df.empty and 'Close' in live_df.columns:
-                for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
-                    if col in live_df.columns and isinstance(live_df[col], pd.DataFrame): live_df[col] = live_df[col].iloc[:, 0]
-                
-                live_open = float(live_df['Open'].dropna().iloc[0])
-                live_high = float(live_df['High'].dropna().max())
-                live_low = float(live_df['Low'].dropna().min())
-                live_close = float(live_df['Close'].dropna().iloc[-1])
-                live_vol = float(live_df['Volume'].dropna().sum())
-                
-                live_date = live_df.index[-1].normalize()
-                hist_date = df.index[-1].normalize()
-                
-                if hist_date < live_date:
-                    df.loc[live_date, ['Open', 'High', 'Low', 'Close', 'Volume']] = [live_open, live_high, live_low, live_close, live_vol]
-                elif hist_date == live_date:
-                    df.loc[df.index[-1], ['Open', 'High', 'Low', 'Close', 'Volume']] = [live_open, live_high, live_low, live_close, live_vol]
-                    
-        return df
-    except Exception: pass
-    return pd.DataFrame()
-
 # --- LOAD DATA ---
 portfolio = load_csv(PORTFOLIO_CSV_URL)
 watchlist = load_csv(WATCHLIST_CSV_URL)
@@ -148,21 +113,28 @@ if not all_symbols:
     st.error("No symbols found. Please check your Google Sheet CSV links.")
     st.stop()
 
+# --- TOP CONTROL PANEL ---
 col_t1, col_t2 = st.columns(2)
-with col_t1: days_to_plot = st.slider("Select chart visual timeframe (Days)", min_value=30, max_value=1825, value=1095)
-with col_t2: chart_type = st.radio("Chart Timeframe", ["Daily", "Weekly"], horizontal=True)
+with col_t1:
+    days_to_plot = st.slider("Select chart visual timeframe (Days)", min_value=30, max_value=1825, value=1095)
+with col_t2:
+    chart_type = st.radio("Chart Timeframe", ["Daily", "Weekly"], horizontal=True)
 
 with st.spinner('Fetching bulk market data from Yahoo Finance...'):
     market_data = fetch_all_stock_data(all_symbols)
-    live_market_data = fetch_live_prices(all_symbols)
 
 start_plot_date = pd.to_datetime(datetime.date.today() - datetime.timedelta(days=days_to_plot))
 
+# --- HELPER FUNCTION: RENDER CHARTS & NEWS ---
 def render_stock_row(row, df, mode="portfolio"):
     symbol = row['Symbol']
     st.markdown("---")
     
+    df = df.dropna(how='all')
     if df.empty or ('Close' not in df.columns) or df['Close'].dropna().empty: return
+
+    for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
+        if isinstance(df[col], pd.DataFrame): df[col] = df[col].iloc[:, 0]
 
     if chart_type == "Weekly":
         df = df.resample('W-FRI').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
@@ -182,6 +154,7 @@ def render_stock_row(row, df, mode="portfolio"):
     current_price = get_safe_price(plot_df['Close'])
     if current_price == 0: return
 
+    # Layout: Metrics (1.5), Chart (4.5), News (2)
     col1, col2, col3 = st.columns([1.5, 4.5, 2])
     
     with col1:
@@ -208,7 +181,8 @@ def render_stock_row(row, df, mode="portfolio"):
             if entry > 0:
                 pct_to_entry = ((entry - current_price) / current_price) * 100
                 st.metric("Entry Trigger", f"₹{entry:.2f}", f"{pct_to_entry:.1f}% to breakout", delta_color="off")
-            if notes and notes != 'nan': st.info(f"📝 {notes}")
+            if notes and notes != 'nan':
+                st.info(f"📝 {notes}")
 
     with col2:
         fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.6, 0.2, 0.2])
@@ -221,11 +195,13 @@ def render_stock_row(row, df, mode="portfolio"):
             if stop_loss > 0: fig.add_trace(go.Scatter(x=plot_df.index, y=[stop_loss]*len(plot_df), line=dict(color='red', width=2, dash='dash'), name='Stop Loss'), row=1, col=1)
             if purchased_at > 0: fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', marker=dict(color='rgba(0,0,0,0)'), name=f'Purchased @ ₹{purchased_at:.2f}'), row=1, col=1)
         else:
+            # LuxAlgo SuperTrend Plotted ONLY in Watchlist Mode
             st_green = np.where(plot_df['ST_Trend'] == 1, plot_df['ST'], np.nan)
             st_red = np.where(plot_df['ST_Trend'] == -1, plot_df['ST'], np.nan)
             fig.add_trace(go.Scatter(x=plot_df.index, y=st_green, line=dict(color='teal', width=2), name='SuperTrend (Bull)'), row=1, col=1)
             fig.add_trace(go.Scatter(x=plot_df.index, y=st_red, line=dict(color='red', width=2), name='SuperTrend (Bear)'), row=1, col=1)
             
+            # Buy / Sell Arrows
             trend_diff = plot_df['ST_Trend'].diff()
             buy_sigs = plot_df[trend_diff == 2]
             sell_sigs = plot_df[trend_diff == -2]
@@ -252,46 +228,70 @@ def render_stock_row(row, df, mode="portfolio"):
         st.plotly_chart(fig, use_container_width=True)
 
     with col3:
+        # News Box Rendering
         st.markdown("##### 📰 Latest News")
         with st.container(height=600):
             try:
                 ticker = yf.Ticker(symbol)
                 news_items = ticker.news
+                
                 if news_items:
                     valid_articles = 0
                     for article in news_items:
-                        if valid_articles >= 5: break
+                        if valid_articles >= 5: # Limit to top 5 valid articles
+                            break
+                            
                         title = "No Title"
                         link = "#"
                         pub_date = None
                         
+                        # Handle NEW YFinance nested dictionary structure
                         if 'content' in article:
                             content = article['content']
                             title = content.get('title', 'No Title')
                             link = content.get('canonicalUrl', {}).get('url', '#')
                             pub_date = content.get('pubDate') or content.get('providerPublishTime')
+                        # Handle OLD YFinance structure
                         else:
                             title = article.get('title', 'No Title')
                             link = article.get('link', '#')
                             pub_date = article.get('providerPublishTime')
                             
+                        # Format Date safely
                         date_label = ""
                         if pub_date:
                             try:
-                                if isinstance(pub_date, (int, float)): dt = datetime.datetime.fromtimestamp(pub_date)
-                                else: dt = pd.to_datetime(pub_date)
+                                if isinstance(pub_date, (int, float)):
+                                    dt = datetime.datetime.fromtimestamp(pub_date)
+                                else:
+                                    dt = pd.to_datetime(pub_date)
                                 date_label = f"`{dt.strftime('%d %b')}` "
-                            except Exception: pass
+                            except Exception:
+                                date_label = ""
 
+                        # Render if valid
                         if title and title != 'No Title':
                             st.markdown(f"- {date_label}[{title}]({link})")
                             st.divider()
                             valid_articles += 1
                             
-                    if valid_articles == 0: st.write("No recent news found.")
-                else: st.write("No recent news found.")
-            except Exception: st.write("Unable to load news at this time.")
+                    if valid_articles == 0:
+                        st.write("No recent news found.")
+                else:
+                    st.write("No recent news found.")
+            except Exception:
+                st.write("Unable to load news at this time.")
+                
+def extract_safe_df(market_data, symbol):
+    try:
+        if isinstance(market_data.columns, pd.MultiIndex):
+            if symbol in market_data.columns.levels[1]: return market_data.xs(symbol, level=1, axis=1).copy()
+            elif symbol in market_data.columns.levels[0]: return market_data.xs(symbol, level=0, axis=1).copy()
+        else: return market_data.copy()
+    except Exception: pass
+    return pd.DataFrame()
 
+# --- BUILD TABS ---
 tab1, tab2 = st.tabs(["💼 Active Portfolio", "🔭 Watchlist Incubator"])
 
 with tab1:
@@ -300,7 +300,7 @@ with tab1:
         summary_data = []
         for index, row in portfolio.iterrows():
             symbol = row['Symbol']
-            df = extract_safe_df(market_data, symbol, live_market_data)
+            df = extract_safe_df(market_data, symbol)
             if df.empty: continue
             
             purchased_at = float(row.get('PurchasedAt', 0)) if not pd.isna(row.get('PurchasedAt', 0)) else 0
@@ -317,7 +317,7 @@ with tab1:
             st.dataframe(summary_df, column_config={"% Return": st.column_config.NumberColumn("% Return", format="%.2f %%"), "Purchased At": st.column_config.NumberColumn("Purchased At", format="₹%.2f"), "Current Price": st.column_config.NumberColumn("Current Price", format="₹%.2f")}, use_container_width=True, hide_index=True)
         
         for index, row in portfolio.iterrows():
-            df = extract_safe_df(market_data, row['Symbol'], live_market_data)
+            df = extract_safe_df(market_data, row['Symbol'])
             render_stock_row(row, df, mode="portfolio")
 
 with tab2:
@@ -326,7 +326,7 @@ with tab2:
         watch_summary = []
         for index, row in watchlist.iterrows():
             symbol = row['Symbol']
-            df = extract_safe_df(market_data, symbol, live_market_data)
+            df = extract_safe_df(market_data, symbol)
             if df.empty: continue
             
             entry = float(row.get('EntryTrigger', 0)) if not pd.isna(row.get('EntryTrigger', 0)) else 0
@@ -341,5 +341,5 @@ with tab2:
             st.dataframe(w_df, column_config={"% to Breakout": st.column_config.NumberColumn("% to Breakout", format="%.2f %%"), "Entry Trigger": st.column_config.NumberColumn("Entry Trigger", format="₹%.2f"), "Current Price": st.column_config.NumberColumn("Current Price", format="₹%.2f")}, use_container_width=True, hide_index=True)
 
         for index, row in watchlist.iterrows():
-            df = extract_safe_df(market_data, row['Symbol'], live_market_data)
+            df = extract_safe_df(market_data, row['Symbol'])
             render_stock_row(row, df, mode="watchlist")
