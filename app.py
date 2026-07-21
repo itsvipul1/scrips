@@ -5,6 +5,7 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import datetime
+import itertools
 
 # --- CONFIGURATION ---
 st.set_page_config(page_title="My Portfolio Dashboard", layout="wide")
@@ -44,54 +45,196 @@ def calculate_rsi(data, window=14):
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
-# --- LUXALGO SUPERTREND AI (CLUSTERING APPROXIMATION) ---
-def calculate_luxalgo_ai(df):
-    high, low, close = df['High'].values, df['Low'].values, df['Close'].values
-    n = len(df)
-    
-    tr = np.maximum(high - low, np.maximum(abs(high - np.roll(close, 1)), abs(low - np.roll(close, 1))))
-    tr[0] = high[0] - low[0]
-    atr = pd.Series(tr).ewm(alpha=1/10, adjust=False).mean().values
-    hl2 = (high + low) / 2
-    
-    factors = np.arange(1.0, 5.5, 0.5)
-    perfs = []
-    
-    for f in factors:
-        up, dn = hl2 + atr * f, hl2 - atr * f
-        upper, lower, trend = np.zeros(n), np.zeros(n), np.ones(n)
-        
-        for i in range(1, n):
-            upper[i] = min(up[i], upper[i-1]) if close[i-1] < upper[i-1] else up[i]
-            lower[i] = max(dn[i], lower[i-1]) if close[i-1] > lower[i-1] else dn[i]
-            if close[i] > upper[i]: trend[i] = 1
-            elif close[i] < lower[i]: trend[i] = -1
-            else: trend[i] = trend[i-1]
-                
-        st_arr = np.where(trend == 1, lower, upper)
-        
-        diff = np.sign(np.roll(close, 1) - st_arr)
-        change = np.append([0], np.diff(close))
-        perf_score = pd.Series(change * diff).ewm(alpha=2/(10+1), adjust=False).mean().iloc[-1]
-        perfs.append((f, perf_score))
-        
-    perfs.sort(key=lambda x: x[1], reverse=True)
-    target_factor = np.mean([x[0] for x in perfs[:3]]) 
-    
-    up, dn = hl2 + atr * target_factor, hl2 - atr * target_factor
-    upper, lower, trend = np.zeros(n), np.zeros(n), np.ones(n)
-    
-    for i in range(1, n):
-        upper[i] = min(up[i], upper[i-1]) if close[i-1] < upper[i-1] else up[i]
-        lower[i] = max(dn[i], lower[i-1]) if close[i-1] > lower[i-1] else dn[i]
-        if close[i] > upper[i]: trend[i] = 1
-        elif close[i] < lower[i]: trend[i] = -1
-        else: trend[i] = trend[i-1]
-            
-    final_st = np.where(trend == 1, lower, upper)
-    return pd.Series(final_st, index=df.index), pd.Series(trend, index=df.index)
+# ==============================================================================
+# LUXALGO SUPERTREND AI - DYNAMIC OPTIMIZATION ENGINE
+# ==============================================================================
 
-# --- LOAD DATA ---
+def calculate_rma(data, length):
+    rma = np.zeros_like(data)
+    if len(data) <= length:
+        return rma
+    rma[length] = np.mean(data[1:length+1])
+    for i in range(length + 1, len(data)):
+        rma[i] = (rma[i-1] * (length - 1) + data[i]) / length
+    return rma
+
+def calculate_atr(high, low, close, length):
+    hl = high[1:] - low[1:]
+    hc = np.abs(high[1:] - close[:-1])
+    lc = np.abs(low[1:] - close[:-1])
+    tr = np.maximum(hl, np.maximum(hc, lc))
+    tr = np.insert(tr, 0, high[0] - low[0])
+    return calculate_rma(tr, length)
+
+def simulate_supertrend_ai(high, low, close, atr, atr_length, min_mult=1.0, max_mult=5.0, step=0.5, perf_alpha=10, target_cluster='Best'):
+    factors = np.arange(min_mult, max_mult + step, step)
+    n_factors = len(factors)
+    n_bars = len(close)
+    hl2 = (high + low) / 2.0
+
+    uppers = np.zeros((n_factors, n_bars))
+    lowers = np.zeros((n_factors, n_bars))
+    trends = np.ones((n_factors, n_bars))
+    outputs = np.zeros((n_factors, n_bars))
+    perfs = np.zeros((n_factors, n_bars))
+
+    dyn_upper = np.zeros(n_bars)
+    dyn_lower = np.zeros(n_bars)
+    dyn_trend = np.zeros(n_bars)
+
+    alpha = 2.0 / (perf_alpha + 1)
+
+    for f_idx, factor in enumerate(factors):
+        uppers[f_idx, 0] = hl2[0] + atr[0] * factor
+        lowers[f_idx, 0] = hl2[0] - atr[0] * factor
+        outputs[f_idx, 0] = lowers[f_idx, 0]
+
+    dyn_upper[0] = hl2[0] + atr[0] * np.mean(factors)
+    dyn_lower[0] = hl2[0] - atr[0] * np.mean(factors)
+    dyn_trend[0] = 1
+
+    for i in range(1, n_bars):
+        current_perfs = np.zeros(n_factors)
+
+        for f_idx, factor in enumerate(factors):
+            up = hl2[i] + atr[i] * factor
+            dn = hl2[i] - atr[i] * factor
+
+            uppers[f_idx, i] = min(up, uppers[f_idx, i-1]) if close[i-1] < uppers[f_idx, i-1] else up
+            lowers[f_idx, i] = max(dn, lowers[f_idx, i-1]) if close[i-1] > lowers[f_idx, i-1] else dn
+
+            if close[i] > uppers[f_idx, i]:
+                trends[f_idx, i] = 1
+            elif close[i] < lowers[f_idx, i]:
+                trends[f_idx, i] = 0
+            else:
+                trends[f_idx, i] = trends[f_idx, i-1]
+
+            outputs[f_idx, i] = lowers[f_idx, i] if trends[f_idx, i] == 1 else uppers[f_idx, i]
+
+            diff = np.sign(close[i-1] - outputs[f_idx, i-1]) if i > 1 else 0
+            raw_perf = (close[i] - close[i-1]) * diff
+            perfs[f_idx, i] = perfs[f_idx, i-1] + alpha * (raw_perf - perfs[f_idx, i-1])
+            current_perfs[f_idx] = perfs[f_idx, i]
+
+        target_factor = np.mean(factors)
+        if i > atr_length:
+            centroids = np.percentile(current_perfs, [25, 50, 75])
+            for _ in range(10):
+                dists = np.abs(current_perfs[:, None] - centroids)
+                labels = np.argmin(dists, axis=1)
+                new_centroids = np.zeros(3)
+                for c_idx in range(3):
+                    if np.sum(labels == c_idx) > 0:
+                        new_centroids[c_idx] = np.mean(current_perfs[labels == c_idx])
+                    else:
+                        new_centroids[c_idx] = centroids[c_idx]
+                if np.all(new_centroids == centroids):
+                    break
+                centroids = new_centroids
+
+            sorted_indices = np.argsort(centroids)
+            if target_cluster == 'Best':
+                cluster_label = sorted_indices[2]
+            elif target_cluster == 'Average':
+                cluster_label = sorted_indices[1]
+            else:
+                cluster_label = sorted_indices[0]
+
+            target_factors = factors[labels == cluster_label]
+            if len(target_factors) > 0:
+                target_factor = np.mean(target_factors)
+
+        dyn_up = hl2[i] + atr[i] * target_factor
+        dyn_dn = hl2[i] - atr[i] * target_factor
+
+        dyn_upper[i] = min(dyn_up, dyn_upper[i-1]) if close[i-1] < dyn_upper[i-1] else dyn_up
+        dyn_lower[i] = max(dyn_dn, dyn_lower[i-1]) if close[i-1] > dyn_lower[i-1] else dyn_dn
+
+        if close[i] > dyn_upper[i]:
+            dyn_trend[i] = 1
+        elif close[i] < dyn_lower[i]:
+            dyn_trend[i] = 0
+        else:
+            dyn_trend[i] = dyn_trend[i-1]
+
+    st_line = np.where(dyn_trend == 1, dyn_lower, dyn_upper)
+    return st_line, dyn_trend
+
+def backtest_signals(df, trend_signals):
+    df_bt = df.copy().reset_index(drop=True)
+    df_bt['Trend'] = trend_signals
+    df_bt['Signal'] = df_bt['Trend'].diff()
+
+    entries = df_bt.index[df_bt['Signal'] == 1].tolist()
+    exits = df_bt.index[df_bt['Signal'] == -1].tolist()
+    trades = []
+
+    for entry_idx in entries:
+        valid_exits = [x for x in exits if x > entry_idx]
+        exit_idx = valid_exits[0] if valid_exits else len(df_bt) - 1
+
+        trade_entry_idx = min(entry_idx + 1, len(df_bt) - 1)
+        trade_exit_idx = min(exit_idx + 1, len(df_bt) - 1)
+
+        if trade_entry_idx < len(df_bt) and trade_exit_idx < len(df_bt) and trade_entry_idx != trade_exit_idx:
+            buy_price = df_bt.loc[trade_entry_idx, 'Open']
+            sell_price = df_bt.loc[trade_exit_idx, 'Open']
+            if buy_price > 0:
+                profit_pct = (sell_price - buy_price) / buy_price
+                trades.append(profit_pct)
+
+    win_rate = sum(1 for t in trades if t > 0) / len(trades) if trades else 0
+    comp_roi = (np.prod([1 + t for t in trades]) - 1) * 100 if trades else 0
+    return len(trades), win_rate, comp_roi
+
+def get_optimized_supertrend(df):
+    """Grid search across parameters to find the highest backtested ROI for this stock."""
+    high = np.squeeze(df['High'].values)
+    low = np.squeeze(df['Low'].values)
+    close = np.squeeze(df['Close'].values)
+
+    atr_lengths = [10, 14, 21]
+    perf_alphas = [10, 20]
+    target_clusters = ['Best', 'Average']
+    min_mult, max_mult, step = 1.0, 5.0, 0.5
+
+    best_roi = -99999
+    best_params = {}
+    best_st_line = None
+    best_trend = None
+
+    combinations = list(itertools.product(atr_lengths, perf_alphas, target_clusters))
+
+    for atr_len, p_alpha, cluster in combinations:
+        atr = calculate_atr(high, low, close, atr_len)
+        st_line, trend = simulate_supertrend_ai(
+            high, low, close, atr,
+            atr_length=atr_len,
+            min_mult=min_mult, max_mult=max_mult, step=step,
+            perf_alpha=p_alpha, target_cluster=cluster
+        )
+        n_trades, win_rate, roi = backtest_signals(df, trend)
+
+        if roi > best_roi:
+            best_roi = roi
+            best_params = {
+                'atr_len': atr_len,
+                'perf_alpha': p_alpha,
+                'cluster': cluster,
+                'trades': n_trades,
+                'win_rate': round(win_rate * 100, 1),
+                'roi': round(roi, 1)
+            }
+            best_st_line = st_line
+            best_trend = trend
+
+    return pd.Series(best_st_line, index=df.index), pd.Series(best_trend, index=df.index), best_params
+
+# ==============================================================================
+# DATA LOADING & INITIALIZATION
+# ==============================================================================
+
 portfolio = load_csv(PORTFOLIO_CSV_URL)
 watchlist = load_csv(WATCHLIST_CSV_URL)
 
@@ -103,19 +246,30 @@ if not all_symbols:
     st.error("No symbols found. Please check your Google Sheet CSV links.")
     st.stop()
 
-# --- TOP CONTROL PANEL ---
 col_t1, col_t2 = st.columns(2)
 with col_t1:
     days_to_plot = st.slider("Select chart visual timeframe (Days)", min_value=30, max_value=1825, value=1095)
 with col_t2:
     chart_type = st.radio("Chart Timeframe", ["Daily", "Weekly"], horizontal=True)
 
-with st.spinner('Fetching bulk market data from Yahoo Finance...'):
+with st.spinner('Fetching market data & running SuperTrend AI optimizations...'):
     market_data = fetch_all_stock_data(all_symbols)
 
 start_plot_date = pd.to_datetime(datetime.date.today() - datetime.timedelta(days=days_to_plot))
 
-# --- HELPER FUNCTION: RENDER CHARTS & NEWS ---
+# ==============================================================================
+# HELPER FUNCTIONS & RENDERER
+# ==============================================================================
+
+def extract_safe_df(market_data, symbol):
+    try:
+        if isinstance(market_data.columns, pd.MultiIndex):
+            if symbol in market_data.columns.levels[1]: return market_data.xs(symbol, level=1, axis=1).copy()
+            elif symbol in market_data.columns.levels[0]: return market_data.xs(symbol, level=0, axis=1).copy()
+        else: return market_data.copy()
+    except Exception: pass
+    return pd.DataFrame()
+
 def render_stock_row(row, df, mode="portfolio"):
     symbol = row['Symbol']
     st.markdown("---")
@@ -129,9 +283,13 @@ def render_stock_row(row, df, mode="portfolio"):
     if chart_type == "Weekly":
         df = df.resample('W-FRI').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
 
-    df['50_MA'] = df['Close'].rolling(window=50).mean()
     df['RSI'] = calculate_rsi(df['Close'], window=14)
     
+    # Run Grid-Search Optimizer for LuxAlgo AI SuperTrend on BOTH tabs
+    st_line, st_trend, opt_params = get_optimized_supertrend(df)
+    df['ST'] = st_line
+    df['ST_Trend'] = st_trend
+
     # TradingView Exact Colors
     tv_bg = "#131722"
     tv_grid = "#2B2B36"
@@ -140,11 +298,6 @@ def render_stock_row(row, df, mode="portfolio"):
     bear_color = "#EF5350"
     
     df['Vol_Color'] = np.where(df['Close'] >= df['Open'], 'rgba(38, 166, 154, 0.5)', 'rgba(239, 83, 80, 0.5)')
-    
-    if mode == "watchlist":
-        st_line, st_trend = calculate_luxalgo_ai(df)
-        df['ST'] = st_line
-        df['ST_Trend'] = st_trend
     
     plot_df = df[df.index >= start_plot_date]
     if plot_df.empty: return
@@ -181,11 +334,18 @@ def render_stock_row(row, df, mode="portfolio"):
             if notes and notes != 'nan':
                 st.info(f"📝 {notes}")
 
+        # Display AI Optimization Parameter Badge
+        if opt_params:
+            st.caption(f"🤖 **Optimized SuperTrend AI Parameters**\n"
+                       f"- ATR Length: `{opt_params['atr_len']}` | Alpha: `{opt_params['perf_alpha']}`\n"
+                       f"- Cluster: `{opt_params['cluster']}`\n"
+                       f"- Backtested Win Rate: `{opt_params['win_rate']}%`\n"
+                       f"- Backtested ROI: `{opt_params['roi']:+.1f}%`")
+
     with col2:
-        # Tighter spacing to mimic TradingView
         fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.01, row_heights=[0.6, 0.2, 0.2])
         
-        # TradingView Styled Candlesticks
+        # Candlesticks
         fig.add_trace(go.Candlestick(
             x=plot_df.index, open=plot_df['Open'], high=plot_df['High'], low=plot_df['Low'], close=plot_df['Close'],
             name='Price',
@@ -193,26 +353,25 @@ def render_stock_row(row, df, mode="portfolio"):
             decreasing_line_color=bear_color, decreasing_fillcolor=bear_color
         ), row=1, col=1)
         
-        # 50 DMA
-        fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['50_MA'], line=dict(color='#2962FF', width=1.5), name='50 MA'), row=1, col=1)
+        # SuperTrend AI Lines (Plotted for BOTH Portfolio and Watchlist)
+        st_green = np.where(plot_df['ST_Trend'] == 1, plot_df['ST'], np.nan)
+        st_red = np.where(plot_df['ST_Trend'] == -1, plot_df['ST'], np.nan)
+        fig.add_trace(go.Scatter(x=plot_df.index, y=st_green, line=dict(color=bull_color, width=2), name='SuperTrend (Bull)'), row=1, col=1)
+        fig.add_trace(go.Scatter(x=plot_df.index, y=st_red, line=dict(color=bear_color, width=2), name='SuperTrend (Bear)'), row=1, col=1)
         
+        # Buy / Sell Signals (Triangles)
+        trend_diff = plot_df['ST_Trend'].diff()
+        buy_sigs = plot_df[trend_diff == 1]
+        sell_sigs = plot_df[trend_diff == -1]
+        
+        fig.add_trace(go.Scatter(x=buy_sigs.index, y=buy_sigs['Low']*0.95, mode='markers', marker=dict(symbol='triangle-up', color=bull_color, size=12), name='Buy Signal'), row=1, col=1)
+        fig.add_trace(go.Scatter(x=sell_sigs.index, y=sell_sigs['High']*1.05, mode='markers', marker=dict(symbol='triangle-down', color=bear_color, size=12), name='Sell Signal'), row=1, col=1)
+
         if mode == "portfolio":
             if target > 0: fig.add_trace(go.Scatter(x=plot_df.index, y=[target]*len(plot_df), line=dict(color=bull_color, width=1.5, dash='dash'), name='Target'), row=1, col=1)
             if stop_loss > 0: fig.add_trace(go.Scatter(x=plot_df.index, y=[stop_loss]*len(plot_df), line=dict(color=bear_color, width=1.5, dash='dash'), name='Stop Loss'), row=1, col=1)
             if purchased_at > 0: fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', marker=dict(color='rgba(0,0,0,0)'), name=f'Purchased @ ₹{purchased_at:.2f}'), row=1, col=1)
         else:
-            st_green = np.where(plot_df['ST_Trend'] == 1, plot_df['ST'], np.nan)
-            st_red = np.where(plot_df['ST_Trend'] == -1, plot_df['ST'], np.nan)
-            fig.add_trace(go.Scatter(x=plot_df.index, y=st_green, line=dict(color=bull_color, width=2), name='SuperTrend (Bull)'), row=1, col=1)
-            fig.add_trace(go.Scatter(x=plot_df.index, y=st_red, line=dict(color=bear_color, width=2), name='SuperTrend (Bear)'), row=1, col=1)
-            
-            trend_diff = plot_df['ST_Trend'].diff()
-            buy_sigs = plot_df[trend_diff == 2]
-            sell_sigs = plot_df[trend_diff == -2]
-            
-            fig.add_trace(go.Scatter(x=buy_sigs.index, y=buy_sigs['Low']*0.95, mode='markers', marker=dict(symbol='triangle-up', color=bull_color, size=12), name='Buy Signal'), row=1, col=1)
-            fig.add_trace(go.Scatter(x=sell_sigs.index, y=sell_sigs['High']*1.05, mode='markers', marker=dict(symbol='triangle-down', color=bear_color, size=12), name='Sell Signal'), row=1, col=1)
-
             upper_ch = float(row.get('UpperChannel', 0)) if not pd.isna(row.get('UpperChannel', 0)) else 0
             lower_ch = float(row.get('LowerChannel', 0)) if not pd.isna(row.get('LowerChannel', 0)) else 0
             
@@ -231,31 +390,26 @@ def render_stock_row(row, df, mode="portfolio"):
         fig.add_trace(go.Scatter(x=plot_df.index, y=[70]*len(plot_df), line=dict(color=tv_grid, width=1, dash='dash'), showlegend=False), row=3, col=1)
         fig.add_trace(go.Scatter(x=plot_df.index, y=[30]*len(plot_df), line=dict(color=tv_grid, width=1, dash='dash'), showlegend=False), row=3, col=1)
         
-        # TRADINGVIEW STYLING OVERHAUL
+        # TRADINGVIEW STYLING
         fig.update_layout(
             height=600, 
             margin=dict(l=0, r=0, t=10, b=0), 
             xaxis_rangeslider_visible=False, 
-            showlegend=False, # Hide bulky legend for TV look
+            showlegend=False,
             plot_bgcolor=tv_bg,
             paper_bgcolor=tv_bg,
             font=dict(color=tv_text, size=10),
-            dragmode='pan', # Crucial: Enables click-and-drag panning like TV
+            dragmode='pan',
             hovermode='x unified'
         )
         
-        # Style X and Y axes to match TradingView
         fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor=tv_grid, zeroline=False, showspikes=True, spikemode='across', spikesnap='cursor', showline=False, spikedash='dot', spikecolor=tv_text)
-        
-        # Move Y-Axis to the right side (Standard financial charting)
         fig.update_yaxes(side='right', showgrid=True, gridwidth=1, gridcolor=tv_grid, zeroline=False, tickfont=dict(color=tv_text))
         fig.update_yaxes(range=[0, 100], row=3, col=1)
         
-        # Scroll Zoom configuration injected here
         st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True, 'displayModeBar': False})
 
     with col3:
-        # News Box Rendering
         st.markdown("##### 📰 Latest News")
         with st.container(height=550):
             try:
@@ -304,17 +458,11 @@ def render_stock_row(row, df, mode="portfolio"):
                     st.write("No recent news found.")
             except Exception:
                 st.write("Unable to load news at this time.")
-                
-def extract_safe_df(market_data, symbol):
-    try:
-        if isinstance(market_data.columns, pd.MultiIndex):
-            if symbol in market_data.columns.levels[1]: return market_data.xs(symbol, level=1, axis=1).copy()
-            elif symbol in market_data.columns.levels[0]: return market_data.xs(symbol, level=0, axis=1).copy()
-        else: return market_data.copy()
-    except Exception: pass
-    return pd.DataFrame()
 
-# --- BUILD TABS ---
+# ==============================================================================
+# TABS CONSTRUCTION
+# ==============================================================================
+
 tab1, tab2 = st.tabs(["💼 Active Portfolio", "🔭 Watchlist Incubator"])
 
 with tab1:
